@@ -1,0 +1,134 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Create app files
+        run: |
+          mkdir -p app/www
+          cat > app/package.json <<'EOF_PKG'
+          {
+            "name": "friends-chat",
+            "version": "1.0.0",
+            "private": true,
+            "dependencies": {
+              "@capacitor/android": "^6.1.2",
+              "@capacitor/cli": "^6.1.2",
+              "@capacitor/core": "^6.1.2"
+            }
+          }
+          EOF_PKG
+          cat > app/capacitor.config.json <<'EOF_CFG'
+          {
+            "appId": "com.friends.chat",
+            "appName": "Чат",
+            "webDir": "www",
+            "server": {
+              "androidScheme": "https",
+              "allowNavigation": ["*"]
+            }
+          }
+          EOF_CFG
+          cat > app/www/index.html <<'EOF_HTML'
+          <!doctype html>
+          <html lang="ru">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+          <title>Чат</title>
+          <style>
+            :root{color-scheme:dark}
+            *{box-sizing:border-box}
+            body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#111827;color:#e5e7eb;font-family:system-ui,sans-serif;padding:20px}
+            .card{width:100%;max-width:380px;background:#1f2937;border-radius:16px;padding:24px}
+            h1{margin:0 0 6px;font-size:22px}
+            p{margin:0 0 16px;color:#9ca3af;font-size:14px}
+            input{width:100%;padding:12px;border-radius:10px;border:1px solid #374151;background:#111827;color:#fff;font-size:16px}
+            button{width:100%;margin-top:12px;padding:12px;border:0;border-radius:10px;background:#3b82f6;color:#fff;font-size:16px;cursor:pointer}
+            button.sec{background:#374151}
+            #msg{margin-top:12px;font-size:14px;min-height:20px;color:#fca5a5}
+          </style>
+          </head>
+          <body>
+          <div class="card">
+            <h1>Подключение к чату</h1>
+            <p>Вставьте ссылку на сервер, которую дал админ (например https://xxx.trycloudflare.com).</p>
+            <input id="url" type="url" inputmode="url" autocapitalize="off" autocorrect="off" placeholder="https://...">
+            <button id="go">Подключиться</button>
+            <button id="cancel" class="sec" style="display:none">Изменить адрес</button>
+            <div id="msg"></div>
+          </div>
+          <script>
+          const KEY = 'chatServerUrl';
+          const $ = id => document.getElementById(id);
+          let timer = null;
+
+          function normalize(v){
+            v = String(v||'').trim();
+            if(!v) return '';
+            if(!/^https?:\/\//i.test(v)) v = 'https://' + v;
+            try { const u = new URL(v); return u.origin; } catch { return ''; }
+          }
+          async function connect(){
+            const url = normalize($('url').value);
+            if(!url){ $('msg').textContent = 'Введите корректный адрес'; return; }
+            $('msg').style.color = '#9ca3af';
+            $('msg').textContent = 'Проверяю сервер…';
+            try {
+              const ctrl = new AbortController();
+              const t = setTimeout(() => ctrl.abort(), 8000);
+              await fetch(url + '/login.html', { mode: 'no-cors', signal: ctrl.signal });
+              clearTimeout(t);
+            } catch {
+              $('msg').style.color = '#fca5a5';
+              $('msg').textContent = 'Сервер недоступен. Проверьте адрес и что сервер запущен.';
+              return;
+            }
+            localStorage.setItem(KEY, url);
+            location.href = url + '/login.html';
+          }
+          $('go').onclick = connect;
+          $('url').addEventListener('keydown', e => { if(e.key === 'Enter') connect(); });
+          $('cancel').onclick = () => { clearTimeout(timer); $('cancel').style.display = 'none'; $('msg').textContent = ''; $('url').focus(); };
+
+          const saved = localStorage.getItem(KEY) || '';
+          $('url').value = saved;
+          // Авто-подключение, кроме случая, когда пользователь вернулся кнопкой «Назад»
+          const nav = performance.getEntriesByType('navigation')[0];
+          const cameBack = nav && nav.type === 'back_forward';
+          if(saved && !cameBack){
+            $('cancel').style.display = 'block';
+            $('msg').style.color = '#9ca3af';
+            $('msg').textContent = 'Подключаюсь к ' + saved + '…';
+            timer = setTimeout(connect, 800);
+          }
+          </script>
+          </body>
+          </html>
+          EOF_HTML
+      - name: Install deps and add Android platform
+        working-directory: app
+        run: |
+          npm install
+          npx cap add android
+          npx cap sync android
+      - name: Build debug APK
+        working-directory: app/android
+        run: ./gradlew assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chat-apk
+          path: app/android/app/build/outputs/apk/debug/app-debug.apk
